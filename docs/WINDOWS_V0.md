@@ -20,6 +20,7 @@ issuepack
 5. If a whole conversation segment is missing, copy that segment in WeCom and use **剪贴板前插 / 剪贴板后插**.
 6. Use manual attachment capture only for media that could not be restored automatically.
 7. Enter an Issue title and click **生成 Issue Package**.
+8. Click **复制 Agent 任务提示** and paste it to Codex. The handoff explicitly starts from `context.md` and keeps `data/`, `raw/`, and unrelated assets out of the default context.
 
 The right-side timeline is the normalized source used to generate the agent-facing package. Re-parsing the left-side source replaces manual timeline edits and therefore asks for confirmation first.
 
@@ -82,6 +83,15 @@ are split into a text event followed by an image event for editing. The compact 
 When the conversation is read from the clipboard, IssuePack stores the original plain-text and HTML clipboard flavors in `raw/`. If a missing segment is later inserted from the clipboard, that segment is stored as another raw snapshot.
 
 Human edits affect the normalized timeline and `context.md`; they do not rewrite the original source snapshots.
+
+## Agent handoff
+
+The generated package has two independent safeguards against unnecessary context loading:
+
+1. `AGENTS.md` defines the package navigation policy.
+2. **复制 Agent 任务提示** creates an explicit handoff prompt telling the coding agent to start from `context.md`, open only relevant referenced assets, and descend into `data/` or `raw/` only for exact lookup or source verification.
+
+This means handing an issue to Codex should not mean "read the entire package". It means "read the compact entrypoint and progressively disclose deeper evidence only when the task requires it".
 
 ## Build Windows executable
 
