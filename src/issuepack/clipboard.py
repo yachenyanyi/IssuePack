@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html as html_lib
+import re
 import shutil
 from pathlib import Path
 
@@ -14,13 +16,71 @@ class ClipboardCaptureError(RuntimeError):
 
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+_IMAGE_MARKER_LINE = re.compile(r"(?im)^(?P<indent>\s*)(?:\[?图片\]?|\[?image\]?|【图片】|\[图片消息\])(?P<trail>\s*)$")
+_LOCAL_FILE_ATTR = re.compile(
+    r'''(?is)\b(?:src|href)\s*=\s*["'](?P<uri>file:///[^"']+)["']'''
+)
+
+
+def _is_image_uri(uri: str) -> bool:
+    lower = uri.lower().split("?", 1)[0].split("#", 1)[0]
+    return any(lower.endswith(suffix) for suffix in _IMAGE_SUFFIXES)
+
+
+def enrich_plain_text_with_html_assets(plain_text: str, html_text: str) -> str:
+    """Restore local image links that WeCom exposes only in rich clipboard HTML.
+
+    WeCom's plain-text clipboard flavor may contain only ``[图片]`` while the
+    rich HTML flavor still contains ``file:///...`` URLs. Keep the reliable
+    plain-text message ordering/header format, but replace image placeholders
+    with the corresponding local file URL in order.
+    """
+    if not plain_text or not html_text:
+        return plain_text
+
+    # If a previous layer already preserved file URLs, do not rewrite it.
+    if "file:///" in plain_text.lower():
+        return plain_text
+
+    image_uris: list[str] = []
+    seen: set[str] = set()
+    for match in _LOCAL_FILE_ATTR.finditer(html_text):
+        uri = html_lib.unescape(match.group("uri"))
+        if _is_image_uri(uri) and uri not in seen:
+            seen.add(uri)
+            image_uris.append(uri)
+
+    if not image_uris:
+        return plain_text
+
+    iterator = iter(image_uris)
+
+    def replace_marker(match: re.Match[str]) -> str:
+        try:
+            uri = next(iterator)
+        except StopIteration:
+            return match.group(0)
+        return f"{match.group('indent')}[image]({uri}){match.group('trail')}"
+
+    return _IMAGE_MARKER_LINE.sub(replace_marker, plain_text)
+
+
+def read_clipboard_conversation_text() -> tuple[str, list[str]]:
+    """Read WeCom conversation text while preserving rich-clipboard media URLs."""
+    clipboard = QGuiApplication.clipboard()
+    mime: QMimeData = clipboard.mimeData()
+    formats = list(mime.formats())
+    plain = mime.text() if mime.hasText() else ""
+    if mime.hasHtml():
+        plain = enrich_plain_text_with_html_assets(plain, mime.html())
+    return plain, formats
 
 
 def capture_clipboard_asset(destination_dir: Path, message_id: str, expected: MessageType) -> Path:
     """Capture the current clipboard file/image into a stable temporary path.
 
-    Qt exposes Windows file-drop clipboard entries as file URLs on supported clients,
-    allowing IssuePack to copy a WeCom temporary media file before it disappears.
+    This remains a fallback for media that could not be recovered automatically
+    from the original multi-message rich clipboard payload.
     """
     clipboard = QGuiApplication.clipboard()
     mime: QMimeData = clipboard.mimeData()
