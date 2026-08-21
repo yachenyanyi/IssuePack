@@ -118,6 +118,8 @@ class IssuePackWindow(QMainWindow):
         generate_button.clicked.connect(self.generate_package)
         open_button = QPushButton("打开最近生成目录")
         open_button.clicked.connect(self.open_last_package)
+        copy_prompt_button = QPushButton("复制 Agent 任务提示")
+        copy_prompt_button.clicked.connect(self.copy_agent_prompt)
 
         self.status_label = QLabel("等待聊天记录")
         self.status_label.setWordWrap(True)
@@ -188,6 +190,7 @@ class IssuePackWindow(QMainWindow):
         actions = QHBoxLayout()
         actions.addWidget(generate_button)
         actions.addWidget(open_button)
+        actions.addWidget(copy_prompt_button)
         actions.addStretch(1)
         layout.addLayout(actions)
         layout.addWidget(self.status_label)
@@ -533,6 +536,21 @@ class IssuePackWindow(QMainWindow):
             QMessageBox.information(self, "IssuePack", "还没有生成 Issue Package。")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.fspath(self.last_package)))
+
+    def copy_agent_prompt(self) -> None:
+        if self.last_package is None:
+            QMessageBox.information(self, "IssuePack", "请先生成 Issue Package。")
+            return
+        package = os.fspath(self.last_package)
+        prompt = (
+            f"处理当前代码库中的客户问题。Issue Package 位于：{package}\n"
+            f"先遵循 {package}\\AGENTS.md，并从 {package}\\context.md 开始。\n"
+            "默认不要读取 data/、raw/，也不要批量读取 assets/；只打开 context.md 中与当前需求相关的附件。\n"
+            "只有在需要核对精确消息顺序/元数据时读取 data/messages.jsonl；只有存在矛盾、缺失或需要验证原始来源时才读取 raw/，并只读取最小必要范围。\n"
+            "先结合当前代码库定位对应实现，再修改、验证，并将最终结果写入该问题包的 result.md。"
+        )
+        QApplication.clipboard().setText(prompt)
+        self.status_label.setText("已复制 Agent 任务提示。粘贴给 Codex 后会按渐进式上下文规则读取问题包。")
 
 
 def main() -> int:
