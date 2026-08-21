@@ -1,191 +1,146 @@
-# Issue Package Specification
+# Issue Package Specification v0.3
 
-This document defines the stable data boundary between real-world customer communication and coding agents.
+IssuePack separates source preservation from the context that a coding agent should normally consume.
 
-## 1. Package boundary
-
-Each customer request, bug, change, or investigation is stored as one isolated Issue Package.
-
-Recommended naming:
-
-```text
-YYYY-MM-DD-NNN-short-title/
-```
-
-Example:
-
-```text
-2026-08-21-001-mobile-home/
-```
-
-## 2. Required structure
+## 1. Package structure
 
 ```text
 <issue-package>/
-├── issue.md
-├── raw/
-│   └── conversation.json
-├── images/
-├── attachments/
+├── AGENTS.md
+├── context.md
+├── data/
+│   ├── meta.json
+│   └── messages.jsonl
+├── raw/                    # optional source snapshots
+│   ├── manifest.json
+│   ├── clipboard-001.txt
+│   └── clipboard-001.html
+├── assets/
+│   ├── i1.jpg
+│   ├── i2.png
+│   └── f1.docx
 └── result.md
 ```
 
-`images/` and `attachments/` may be empty when the conversation contains no such material.
+The layers have different purposes and must not be treated as interchangeable.
 
-## 3. Raw events are authoritative
+## 2. Agent context layer
 
-IssuePack must preserve the original communication as much as possible.
+`context.md` is the default and normally sufficient context for the coding agent.
 
-The source of truth is `raw/conversation.json`. `issue.md` is a deterministic human/agent-readable rendering of those events.
-
-Do not let an LLM rewrite, summarize, merge, or reinterpret the source conversation during package creation.
-
-## 4. Event format
-
-Minimal event schema:
-
-```json
-{
-  "issue_id": "2026-08-21-001",
-  "source": "wecom-clipboard",
-  "events": [
-    {
-      "id": "msg-001",
-      "time": "2026-08-21T10:21:00+08:00",
-      "sender": "客户A",
-      "type": "text",
-      "content": "首页这里再改一下"
-    },
-    {
-      "id": "msg-002",
-      "time": "2026-08-21T10:22:00+08:00",
-      "sender": "客户A",
-      "type": "image",
-      "file": "images/msg-002-image.png"
-    }
-  ]
-}
-```
-
-Initial event types:
-
-- `text`
-- `image`
-- `file`
-- `video`
-- `unknown`
-
-Adapters may preserve additional source metadata under a `meta` object, but the common fields above should remain stable.
-
-## 5. Message/file binding
-
-An attachment should be named using the message/event identifier whenever possible.
-
-Preferred:
+IssuePack uses a compact transcript optimized for chat-shaped requirements:
 
 ```text
-images/msg-008-image.png
-attachments/msg-021-file.docx
+# 小程序修改
+people:A=春天@微信@微信联系人;B=王挺
+date:8/17
+13:59:52 A> [img:assets/i1.jpg]
+14:12:07 A> 这是之前提出的修改意见，还没改，请一并修改
+14:12:32 B> 好的，我统一修改
+14:21:00 A> 咱们第一次合作做小程序开发，确实有很多功能和细节需要多次沟通，反复修改，辛苦啦 [img:assets/i2.png]
 ```
 
-Avoid generic numbering when the source event ID is available:
+Rules:
 
-```text
-001.png
-002.png
-```
+- A sender name is declared once and replaced by a short alias in transcript rows.
+- When a run of messages shares one date, the date is declared once.
+- Adjacent events with the same sender and timestamp may be rendered on one line in `context.md`.
+- Images use `[img:assets/iN.ext]`.
+- Files use `[file:assets/fN.ext]`.
+- Missing media remains explicit as `[img:missing]` or `[file:missing]`.
+- The compact view may combine events for token efficiency; exact event boundaries remain in `data/messages.jsonl`.
 
-The stable event ID makes later tracing, evaluation, and repair easier.
+## 3. Progressive disclosure rule
 
-## 6. issue.md rendering
+`AGENTS.md` is generated in every package and defines how a coding agent should navigate the package:
 
-`issue.md` should preserve chronological order.
+1. Read `context.md` first.
+2. Open only assets referenced by requirement lines that matter to the current task.
+3. Do not proactively read or summarize `data/` or `raw/`.
+4. Read `data/messages.jsonl` only when exact message order or metadata is necessary.
+5. Read `raw/` only to resolve a contradiction, verify source fidelity, or recover information missing from higher layers.
+6. When falling back to lower layers, inspect the smallest specific file or segment needed instead of bulk-loading the directory.
+
+The goal is to prevent a coding agent from spending context tokens on duplicate representations of the same conversation.
+
+## 4. Normalized data layer
+
+`data/messages.jsonl` is the complete normalized timeline after parsing and any human corrections in IssuePack.
 
 Example:
 
-```markdown
-# Issue
-
-## 2026-08-21 10:21 · 客户A
-
-首页这里再改一下
-
-## 2026-08-21 10:22 · 客户A
-
-![msg-002](./images/msg-002-image.png)
-
-## 2026-08-21 10:23 · 客户A
-
-手机上还是太大。
+```jsonl
+{"id":"msg-001","time":"8/17 14:12:07","sender":"春天@微信@微信联系人","type":"text","content":"这是之前提出的修改意见，还没改，请一并修改"}
+{"id":"msg-002","time":"8/17 14:12:32","sender":"王挺","type":"text","content":"好的，我统一修改"}
+{"id":"msg-003","time":"8/17 14:21:00","sender":"春天@微信@微信联系人","type":"image","asset":"assets/i1.png"}
 ```
 
-Do not add inferred sections such as `Requirement`, `Technical Solution`, or `Affected Files` during package creation.
+This layer is intended for exact lookup and tooling, not default model ingestion.
 
-Those belong to agent output, not source context.
+`data/meta.json` stores package metadata such as schema version, title, creation time, and event count.
+
+## 5. Raw source layer
+
+`raw/` stores original clipboard/source snapshots when available. It is evidence and recovery material, not the normal agent prompt.
+
+Source snapshots are immutable. Human insertion, deletion, reordering, and correction affect the normalized `data/` layer and compact `context.md`; they do not rewrite the original source snapshots.
+
+A package can contain multiple source snapshots when missing conversation segments were pasted later.
+
+## 6. Assets
+
+All media exposed to the agent is copied into `assets/` with short names:
+
+```text
+assets/i1.jpg
+assets/i2.png
+assets/f1.docx
+```
+
+Short names reduce repeated path tokens while keeping references understandable.
+
+The normalized data layer retains the event-to-asset binding.
 
 ## 7. result.md
 
-`result.md` is not part of the original evidence. It is generated after an agent completes the task.
+`result.md` is derived output and is not requirement evidence.
 
-Recommended fields:
+Recommended sections:
 
 ```markdown
 # Resolution
 
 ## Requirement understood
 
-## Relevant implementation
-
 ## Files changed
-
-## Changes
 
 ## Verification
 
-## Remaining uncertainty
-
-## Related commit / PR
+## Remaining uncertainties
 ```
 
-This separation is important:
+The agent should write it after completing the task, not read it as source context before starting.
+
+## 8. Design principles
 
 ```text
-issue.md  = source context
-result.md = derived agent output
+raw source
+   ↓
+parser + human correction
+   ↓
+data/messages.jsonl
+   ↓
+compact context renderer
+   ↓
+context.md
+   ↓
+coding agent
 ```
 
-## 8. Privacy
+IssuePack is a context transport and orchestration layer. It does not summarize customer intent with an LLM during package creation.
 
-Real Issue Packages may contain private customer information, screenshots, source documents, credentials, or commercially sensitive content.
+The default path is deliberately lossy only in representation overhead, not in customer meaning: duplicate sender names, duplicate dates, verbose Markdown headings, and repeated structural keys are removed from the agent-facing view while exact normalized events remain available on demand.
 
-The IssuePack source repository may be public, but real packages should default to local or private storage and should be excluded from Git by default.
+## 9. Privacy
 
-## 9. Adapter rule
-
-Source-specific collectors must not define the Issue Package format.
-
-Examples:
-
-```text
-WeComClipboardAdapter ─┐
-WeComDesktopAdapter   ├─> Raw Events -> Renderer -> Issue Package
-FutureAPIAdapter      ┘
-```
-
-This allows collection mechanisms to change without changing the package contract.
-
-## 10. Context principle
-
-IssuePack is a context transport layer, not a requirement reasoning layer.
-
-Its job is:
-
-```text
-find + capture + preserve + bind + render
-```
-
-The coding agent's job is:
-
-```text
-inspect repository + interpret context + implement + verify
-```
+Real packages may contain private customer communication, screenshots, source documents, credentials, or commercially sensitive information. They should remain local or in private storage and must not be committed to the public IssuePack source repository.
