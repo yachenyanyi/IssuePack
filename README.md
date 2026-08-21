@@ -87,7 +87,8 @@ Exact event boundaries remain in `data/messages.jsonl` for on-demand lookup.
 6. Insert missing rows or paste an entire missing chat segment into the middle
 7. Reorder/delete messages as needed
 8. Generate the Issue Package
-9. Coding agent starts from context.md and opens deeper files only when required
+9. Copy the Agent handoff prompt
+10. Coding agent starts from context.md and opens deeper files only when required
 ```
 
 Run from source:
@@ -107,6 +108,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 
 GitHub Actions also builds the Windows package automatically and uploads `IssuePack-windows-x64` as a workflow artifact.
 
+After generating a package, **复制 Agent 任务提示** creates an explicit Codex handoff prompt that repeats the progressive-disclosure policy. This avoids relying only on package-local instructions when the coding agent is launched from the repository root.
+
 ## Roadmap
 
 ### V0 — Package builder
@@ -119,7 +122,9 @@ GitHub Actions also builds the Windows package automatically and uploads `IssueP
 - [x] Reorder/delete parsed messages while keeping attachment bindings
 - [x] Generate compact `context.md`
 - [x] Generate normalized `data/messages.jsonl`
+- [x] Preserve original clipboard snapshots under `raw/`
 - [x] Generate package-scoped `AGENTS.md` for progressive disclosure
+- [x] Generate explicit Agent handoff prompt
 
 ### V1 — Desktop utility
 
@@ -128,7 +133,7 @@ GitHub Actions also builds the Windows package automatically and uploads `IssueP
 - [ ] Project selection
 - [ ] Faster timeline editing / keyboard shortcuts
 - [x] One-click package creation
-- [ ] Open / hand off package to Codex
+- [ ] Direct Codex launch / handoff
 
 ### V2 — WeCom adapter
 
