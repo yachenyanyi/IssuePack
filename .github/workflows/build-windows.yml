@@ -1,0 +1,66 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "feat/**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        shell: pwsh
+        run: python -m pytest -q
+
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --name IssuePack `
+            --collect-all PySide6 `
+            run_issuepack.py
+
+      - name: Create ZIP package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path .\dist\IssuePack\* -DestinationPath .\IssuePack-windows-x64.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IssuePack-windows-x64
+          path: IssuePack-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: IssuePack-windows-x64.zip
+          generate_release_notes: true
