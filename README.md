@@ -6,7 +6,7 @@ The first target workflow is software outsourcing / maintenance work where requi
 
 ## Current status
 
-A first Windows V0 is now implemented with Python 3.11 + PySide6. It can parse copied WeCom chat text, detect image/file placeholders, capture the corresponding clipboard media, and generate a complete local Issue Package.
+A first Windows V0 is implemented with Python 3.11 + PySide6. It can parse copied WeCom chat text and rich clipboard data, automatically recover local image/file paths when available, let the user correct the parsed message timeline, and generate a complete local Issue Package.
 
 See [Windows V0 usage](docs/WINDOWS_V0.md).
 
@@ -24,6 +24,8 @@ Customer chat
         ↓
      IssuePack
         ↓
+ editable timeline
+        ↓
   Issue Package
         ↓
 Codex / coding agent
@@ -39,9 +41,10 @@ code / test / result
 2. **No premature summarization** — the coding agent should inspect the original context itself.
 3. **One issue, one package** — every customer problem has an isolated context boundary.
 4. **Multimodal by default** — images and files are first-class context, not OCR-only text.
-5. **Traceable** — generated Markdown must keep the relationship between message placeholders and real files.
-6. **Agent-agnostic** — the package format should work with Codex and other coding agents.
-7. **Local-first for customer data** — real customer conversations and attachments should not be committed to this repository.
+5. **Human-correctable** — automatic parsing creates a timeline that can be inserted into, edited, reordered, and deleted before generation.
+6. **Traceable** — generated Markdown must keep the relationship between message placeholders and real files.
+7. **Agent-agnostic** — the package format should work with Codex and other coding agents.
+8. **Local-first for customer data** — real customer conversations and attachments should not be committed to this repository.
 
 ## Proposed Issue Package
 
@@ -58,7 +61,7 @@ code / test / result
 └── result.md
 ```
 
-- `issue.md`: chronological rendering of the original conversation.
+- `issue.md`: chronological rendering of the final edited conversation timeline.
 - `raw/conversation.json`: machine-readable source events.
 - `images/`: original screenshots and images referenced by conversation messages.
 - `attachments/`: original files sent by the customer.
@@ -68,11 +71,14 @@ code / test / result
 
 ```text
 1. Copy selected WeCom chat messages
-2. IssuePack parses date / sender / text / attachment placeholders
-3. User copies the corresponding images/files in order
-4. IssuePack captures clipboard media and binds them to placeholders
-5. IssuePack generates the package
-6. Coding agent reads the package together with the target repository
+2. IssuePack reads plain text + rich clipboard data
+3. Parse date / sender / text / local media paths
+4. Automatically recover images/files when possible
+5. Review and edit the message timeline
+6. Insert missing rows or paste an entire missing chat segment into the middle
+7. Reorder/delete messages as needed
+8. Generate the Issue Package
+9. Coding agent reads the package together with the target repository
 ```
 
 Run from source:
@@ -90,15 +96,20 @@ Build an executable:
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 ```
 
+GitHub Actions also builds the Windows package automatically and uploads `IssuePack-windows-x64` as a workflow artifact.
+
 The collector is intentionally mechanical. Requirement interpretation belongs to the coding agent.
 
 ## Roadmap
 
 ### V0 — Package builder
 
-- [x] Parse copied WeCom conversation text
-- [x] Detect image/file placeholders
-- [x] Capture clipboard images/files
+- [x] Parse copied WeCom conversation text and rich clipboard data
+- [x] Recover local image/file paths when available
+- [x] Manual clipboard fallback for unresolved media
+- [x] Editable message timeline
+- [x] Insert missing chat segments from clipboard
+- [x] Reorder/delete parsed messages while keeping attachment bindings
 - [x] Generate `issue.md`
 - [x] Generate `raw/conversation.json`
 - [x] Create a stable issue folder
@@ -108,7 +119,7 @@ The collector is intentionally mechanical. Requirement interpretation belongs to
 - [ ] Windows tray application
 - [ ] Global shortcut
 - [ ] Project selection
-- [x] Attachment completion UI
+- [ ] Faster timeline editing / keyboard shortcuts
 - [x] One-click package creation
 - [ ] Open / hand off package to Codex
 
