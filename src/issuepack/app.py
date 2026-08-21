@@ -29,7 +29,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .clipboard import ClipboardCaptureError, capture_clipboard_asset, read_clipboard_conversation_text
+from .clipboard import (
+    ClipboardCaptureError,
+    ClipboardConversation,
+    capture_clipboard_asset,
+    read_clipboard_conversation_payload,
+)
 from .models import Message, MessageType
 from .package_builder import build_package, source_asset_for
 from .parser import parse_wecom_text
@@ -44,6 +49,7 @@ class IssuePackWindow(QMainWindow):
 
         self.messages: list[Message] = []
         self.captured_assets: dict[str, Path] = {}
+        self.raw_snapshots: list[dict[str, object]] = []
         self.session_dir = Path(tempfile.mkdtemp(prefix="issuepack-session-"))
         self.last_package: Path | None = None
         self.timeline_dirty = False
@@ -191,13 +197,24 @@ class IssuePackWindow(QMainWindow):
         if directory:
             self.output_edit.setText(directory)
 
+    @staticmethod
+    def _raw_snapshot(payload: ClipboardConversation, purpose: str) -> dict[str, object]:
+        return {
+            "purpose": purpose,
+            "plain_text": payload.plain_text,
+            "html_text": payload.html_text,
+            "formats": payload.formats,
+        }
+
     def load_clipboard_text(self) -> None:
-        text, formats = read_clipboard_conversation_text()
+        payload = read_clipboard_conversation_payload()
+        text = payload.enriched_text
         if not text.strip():
             QMessageBox.warning(self, "IssuePack", "剪贴板里没有文本。")
             return
         self.chat_edit.setPlainText(text)
-        rich = "text/html" in formats
+        self.raw_snapshots = [self._raw_snapshot(payload, "initial")]
+        rich = "text/html" in payload.formats
         self.status_label.setText(
             f"已读取剪贴板文本（{'检测到富文本，可恢复图片路径' if rich else '仅检测到纯文本'}），点击“解析聊天”。"
         )
@@ -234,6 +251,15 @@ class IssuePackWindow(QMainWindow):
                 return
 
         text = self.chat_edit.toPlainText()
+        if text.strip() and not self.raw_snapshots:
+            self.raw_snapshots = [
+                {
+                    "purpose": "manual-source",
+                    "plain_text": text,
+                    "html_text": "",
+                    "formats": ["text/plain"],
+                }
+            ]
         self.messages = parse_wecom_text(text)
         self.captured_assets.clear()
         auto_count = self._stage_recovered_assets()
@@ -370,7 +396,8 @@ class IssuePackWindow(QMainWindow):
         self.status_label.setText("已插入一条空白文本记录。填写右侧编辑区后点击“保存修改”。")
 
     def insert_clipboard_messages(self, before: bool) -> None:
-        text, _formats = read_clipboard_conversation_text()
+        payload = read_clipboard_conversation_payload()
+        text = payload.enriched_text
         if not text.strip():
             QMessageBox.warning(self, "IssuePack", "剪贴板里没有可插入的聊天文本。")
             return
@@ -390,6 +417,7 @@ class IssuePackWindow(QMainWindow):
             insert_at = selected if before else selected + 1
 
         self.messages[insert_at:insert_at] = inserted
+        self.raw_snapshots.append(self._raw_snapshot(payload, "insert-before" if before else "insert-after"))
         self._reindex_timeline()
         auto_count = self._stage_recovered_assets()
         self.timeline_dirty = True
@@ -485,7 +513,13 @@ class IssuePackWindow(QMainWindow):
                 return
 
         try:
-            package = build_package(Path(self.output_edit.text()), title, self.messages, self.captured_assets)
+            package = build_package(
+                Path(self.output_edit.text()),
+                title,
+                self.messages,
+                self.captured_assets,
+                raw_snapshots=self.raw_snapshots,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "生成失败", str(exc))
             return
