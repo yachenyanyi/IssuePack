@@ -63,7 +63,27 @@ Rules:
 
 The goal is to prevent a coding agent from spending context tokens on duplicate representations of the same conversation.
 
-## 4. Normalized data layer
+## 4. Handoff rule
+
+IssuePack should not hand a coding agent the instruction "read this whole folder".
+
+The handoff must explicitly identify the entrypoint and repeat the progressive-disclosure policy:
+
+```text
+Issue Package: <path>
+Follow <path>/AGENTS.md.
+Start from <path>/context.md.
+Do not read data/, raw/, or all assets by default.
+Open only relevant referenced assets.
+Use data/messages.jsonl only for exact lookup.
+Use raw/ only for contradiction/source verification, and read the smallest necessary range.
+```
+
+The Windows V0 exposes this through **复制 Agent 任务提示** after package generation. A future direct Codex launch must use the same contract.
+
+This explicit handoff exists in addition to package `AGENTS.md` so the behavior does not depend solely on how or where the coding agent was launched.
+
+## 5. Normalized data layer
 
 `data/messages.jsonl` is the complete normalized timeline after parsing and any human corrections in IssuePack.
 
@@ -79,7 +99,7 @@ This layer is intended for exact lookup and tooling, not default model ingestion
 
 `data/meta.json` stores package metadata such as schema version, title, creation time, and event count.
 
-## 5. Raw source layer
+## 6. Raw source layer
 
 `raw/` stores original clipboard/source snapshots when available. It is evidence and recovery material, not the normal agent prompt.
 
@@ -87,7 +107,7 @@ Source snapshots are immutable. Human insertion, deletion, reordering, and corre
 
 A package can contain multiple source snapshots when missing conversation segments were pasted later.
 
-## 6. Assets
+## 7. Assets
 
 All media exposed to the agent is copied into `assets/` with short names:
 
@@ -101,7 +121,7 @@ Short names reduce repeated path tokens while keeping references understandable.
 
 The normalized data layer retains the event-to-asset binding.
 
-## 7. result.md
+## 8. result.md
 
 `result.md` is derived output and is not requirement evidence.
 
@@ -121,7 +141,7 @@ Recommended sections:
 
 The agent should write it after completing the task, not read it as source context before starting.
 
-## 8. Design principles
+## 9. Design principles
 
 ```text
 raw source
@@ -141,6 +161,6 @@ IssuePack is a context transport and orchestration layer. It does not summarize 
 
 The default path is deliberately lossy only in representation overhead, not in customer meaning: duplicate sender names, duplicate dates, verbose Markdown headings, and repeated structural keys are removed from the agent-facing view while exact normalized events remain available on demand.
 
-## 9. Privacy
+## 10. Privacy
 
 Real packages may contain private customer communication, screenshots, source documents, credentials, or commercially sensitive information. They should remain local or in private storage and must not be committed to the public IssuePack source repository.
