@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
@@ -39,7 +40,7 @@ class IssuePackWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("IssuePack V0")
-        self.resize(1320, 820)
+        self.resize(1320, 840)
 
         self.messages: list[Message] = []
         self.captured_assets: dict[str, Path] = {}
@@ -94,6 +95,10 @@ class IssuePackWindow(QMainWindow):
         delete_button.clicked.connect(self.delete_selected_message)
         clear_editor_button = QPushButton("清空编辑区")
         clear_editor_button.clicked.connect(self.clear_message_editor)
+        clipboard_before_button = QPushButton("剪贴板前插")
+        clipboard_before_button.clicked.connect(lambda: self.insert_clipboard_messages(before=True))
+        clipboard_after_button = QPushButton("剪贴板后插")
+        clipboard_after_button.clicked.connect(lambda: self.insert_clipboard_messages(before=False))
 
         self.capture_button = QPushButton("捕获选中/下一个未解析附件")
         self.capture_button.clicked.connect(self.capture_next_asset)
@@ -163,6 +168,11 @@ class IssuePackWindow(QMainWindow):
         edit_actions_2.addWidget(clear_editor_button)
         right.addLayout(edit_actions_2)
 
+        clipboard_actions = QHBoxLayout()
+        clipboard_actions.addWidget(clipboard_before_button)
+        clipboard_actions.addWidget(clipboard_after_button)
+        right.addLayout(clipboard_actions)
+
         right.addWidget(QLabel("附件（优先自动恢复；选中未解析图片/文件后可手动捕获）"))
         right.addWidget(self.capture_button)
         right.addWidget(self.progress)
@@ -198,6 +208,8 @@ class IssuePackWindow(QMainWindow):
     def _stage_recovered_assets(self) -> int:
         staged = 0
         for message in self._placeholders():
+            if message.id in self.captured_assets:
+                continue
             source = source_asset_for(message)
             if source is None:
                 continue
@@ -344,7 +356,7 @@ class IssuePackWindow(QMainWindow):
         self.messages.insert(
             insert_at,
             Message(
-                id="msg-new",
+                id=f"insert-{uuid.uuid4().hex}",
                 sender=sender,
                 time=time,
                 type=MessageType.TEXT,
@@ -356,6 +368,35 @@ class IssuePackWindow(QMainWindow):
         self.refresh_timeline(insert_at)
         self.content_edit.setFocus()
         self.status_label.setText("已插入一条空白文本记录。填写右侧编辑区后点击“保存修改”。")
+
+    def insert_clipboard_messages(self, before: bool) -> None:
+        text, _formats = read_clipboard_conversation_text()
+        if not text.strip():
+            QMessageBox.warning(self, "IssuePack", "剪贴板里没有可插入的聊天文本。")
+            return
+
+        inserted = parse_wecom_text(text)
+        if not inserted:
+            QMessageBox.warning(self, "IssuePack", "没有从剪贴板解析到可插入的聊天记录。")
+            return
+
+        for message in inserted:
+            message.id = f"insert-{uuid.uuid4().hex}"
+
+        selected = self._selected_index()
+        if selected is None:
+            insert_at = 0 if before else len(self.messages)
+        else:
+            insert_at = selected if before else selected + 1
+
+        self.messages[insert_at:insert_at] = inserted
+        self._reindex_timeline()
+        auto_count = self._stage_recovered_assets()
+        self.timeline_dirty = True
+        self.refresh_timeline(insert_at)
+        self.status_label.setText(
+            f"已从剪贴板插入 {len(inserted)} 条消息，其中自动恢复 {auto_count} 个附件。可继续调整顺序或编辑。"
+        )
 
     def move_selected_message(self, delta: int) -> None:
         index = self._selected_index()
