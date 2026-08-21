@@ -20,6 +20,9 @@ class Message:
     content: str = ""
     source_header: str = ""
     asset_path: str | None = None
+    # Local file path recovered from the original rich clipboard payload.
+    # This is source context only; asset_path is the path inside the generated package.
+    source_asset_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
