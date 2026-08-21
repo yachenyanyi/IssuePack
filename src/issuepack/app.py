@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -26,9 +27,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .clipboard import ClipboardCaptureError, capture_clipboard_asset
+from .clipboard import ClipboardCaptureError, capture_clipboard_asset, read_clipboard_conversation_text
 from .models import Message, MessageType
-from .package_builder import build_package
+from .package_builder import build_package, source_asset_for
 from .parser import parse_wecom_text
 
 
@@ -54,7 +55,7 @@ class IssuePackWindow(QMainWindow):
         self.chat_edit = QPlainTextEdit()
         self.chat_edit.setPlaceholderText(
             "复制企业微信聊天记录后，点击“读取剪贴板”。\n\n"
-            "IssuePack 不会总结聊天内容，只做结构化与附件绑定。"
+            "IssuePack 会优先读取富剪贴板中的本地图片路径，不会总结聊天内容。"
         )
 
         paste_button = QPushButton("读取剪贴板")
@@ -65,7 +66,7 @@ class IssuePackWindow(QMainWindow):
         self.placeholder_list = QListWidget()
         self.placeholder_list.setMinimumWidth(330)
 
-        self.capture_button = QPushButton("捕获下一个附件")
+        self.capture_button = QPushButton("捕获下一个未解析附件")
         self.capture_button.clicked.connect(self.capture_next_asset)
         self.capture_button.setEnabled(False)
 
@@ -105,7 +106,7 @@ class IssuePackWindow(QMainWindow):
         body.addLayout(left, 2)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("附件占位（按聊天顺序）"))
+        right.addWidget(QLabel("附件（优先自动恢复，失败时手动捕获）"))
         right.addWidget(self.placeholder_list, 1)
         right.addWidget(self.capture_button)
         right.addWidget(self.progress)
@@ -125,24 +126,45 @@ class IssuePackWindow(QMainWindow):
             self.output_edit.setText(directory)
 
     def load_clipboard_text(self) -> None:
-        text = QApplication.clipboard().text()
+        text, formats = read_clipboard_conversation_text()
         if not text.strip():
             QMessageBox.warning(self, "IssuePack", "剪贴板里没有文本。")
             return
         self.chat_edit.setPlainText(text)
-        self.status_label.setText("已读取剪贴板文本，点击“解析聊天”。")
+        rich = "text/html" in formats
+        self.status_label.setText(
+            f"已读取剪贴板文本（{'检测到富文本，可恢复图片路径' if rich else '仅检测到纯文本'}），点击“解析聊天”。"
+        )
+
+    def _stage_recovered_assets(self) -> int:
+        staged = 0
+        for message in self._placeholders():
+            source = source_asset_for(message)
+            if source is None:
+                continue
+            target = self.session_dir / f"{message.id}{source.suffix.lower() or '.bin'}"
+            try:
+                shutil.copy2(source, target)
+            except OSError:
+                continue
+            self.captured_assets[message.id] = target
+            staged += 1
+        return staged
 
     def parse_chat(self) -> None:
         text = self.chat_edit.toPlainText()
         self.messages = parse_wecom_text(text)
         self.captured_assets.clear()
+        auto_count = self._stage_recovered_assets()
         self.refresh_placeholders()
         text_count = sum(message.type == MessageType.TEXT for message in self.messages)
         asset_count = sum(message.type != MessageType.TEXT for message in self.messages)
         if not self.messages:
             self.status_label.setText("没有解析到消息。可以保留实际复制格式，用于扩展解析器。")
         else:
-            self.status_label.setText(f"解析到 {len(self.messages)} 条事件：文本 {text_count}，附件占位 {asset_count}。")
+            self.status_label.setText(
+                f"解析到 {len(self.messages)} 条事件：文本 {text_count}，附件 {asset_count}；已自动恢复 {auto_count} 个本地附件。"
+            )
 
     def _placeholders(self) -> list[Message]:
         return [message for message in self.messages if message.type in {MessageType.IMAGE, MessageType.FILE}]
@@ -154,10 +176,11 @@ class IssuePackWindow(QMainWindow):
             captured = message.id in self.captured_assets
             icon = "✓" if captured else "○"
             kind = "图片" if message.type == MessageType.IMAGE else "文件"
-            item = QListWidgetItem(f"{icon} {message.id} · {message.time} · {message.sender} · {kind}")
+            mode = "自动恢复" if captured and message.source_asset_path else ("手动捕获" if captured else "待补充")
+            item = QListWidgetItem(f"{icon} {message.id} · {message.time} · {message.sender} · {kind} · {mode}")
             item.setData(Qt.ItemDataRole.UserRole, message.id)
             self.placeholder_list.addItem(item)
-        done = len(self.captured_assets)
+        done = len([message for message in placeholders if message.id in self.captured_assets])
         total = len(placeholders)
         self.progress.setRange(0, max(total, 1))
         self.progress.setValue(done)
@@ -174,7 +197,7 @@ class IssuePackWindow(QMainWindow):
             return
         self.captured_assets[target.id] = captured
         self.refresh_placeholders()
-        self.status_label.setText(f"已捕获 {target.id}: {captured.name}")
+        self.status_label.setText(f"已手动捕获 {target.id}: {captured.name}")
 
     def generate_package(self) -> None:
         title = self.title_edit.text().strip()
@@ -187,12 +210,12 @@ class IssuePackWindow(QMainWindow):
             QMessageBox.warning(self, "IssuePack", "没有可生成的聊天消息。")
             return
 
-        missing = [m for m in self._placeholders() if m.id not in self.captured_assets]
+        missing = [m for m in self._placeholders() if m.id not in self.captured_assets and source_asset_for(m) is None]
         if missing:
             answer = QMessageBox.question(
                 self,
                 "存在未补充附件",
-                f"还有 {len(missing)} 个图片/文件没有捕获。仍然生成吗？\n未补充项会保留为明确占位。",
+                f"还有 {len(missing)} 个图片/文件没有恢复。仍然生成吗？\n未补充项会保留为明确占位。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
