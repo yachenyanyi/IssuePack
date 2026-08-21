@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+from urllib.parse import unquote, urlparse
 
 from .models import Message, MessageType
 
 
 _IMAGE_MARKERS = {"图片", "[图片]", "【图片】", "image", "[image]", "[图片消息]"}
 _FILE_MARKERS = {"文件", "[文件]", "【文件】", "file", "[file]", "[文件消息]"}
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+_MARKDOWN_ASSET_PATTERN = re.compile(
+    r"^!?\[(?P<label>[^\]]+)\]\((?P<uri>file:///.+)\)$",
+    re.IGNORECASE,
+)
 
 # WeCom copy formats can differ slightly by client/version. Keep the parser permissive.
 _HEADER_PATTERNS = [
-    # 张三 2026-08-21 10:23[:45]
+    # 张三 2026-08-21 10:23[:45] / 张三 8/17 09:48:37
     re.compile(
         r"^(?P<sender>.+?)\s+(?P<time>(?:20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?|\d{1,2}[-/.]\d{1,2})\s+(?:上午|下午)?\s*\d{1,2}:\d{2}(?::\d{2})?)$"
     ),
@@ -41,19 +48,50 @@ def _parse_header(line: str) -> tuple[str, str] | None:
     return None
 
 
-def _marker_type(line: str) -> MessageType | None:
-    normalized = line.strip().lower()
-    if normalized in {marker.lower() for marker in _IMAGE_MARKERS}:
-        return MessageType.IMAGE
-    if normalized in {marker.lower() for marker in _FILE_MARKERS}:
-        return MessageType.FILE
-    return None
+def _file_uri_to_local_path(uri: str) -> str | None:
+    parsed = urlparse(uri)
+    if parsed.scheme.lower() != "file":
+        return None
+
+    path = unquote(parsed.path)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        path = f"//{parsed.netloc}{path}"
+    elif re.match(r"^/[A-Za-z]:/", path):
+        path = path[1:]
+
+    if os.name == "nt":
+        path = path.replace("/", "\\")
+    return path
+
+
+def _asset_marker(line: str) -> tuple[MessageType, str | None] | None:
+    normalized = line.strip()
+    lowered = normalized.lower()
+    if lowered in {marker.lower() for marker in _IMAGE_MARKERS}:
+        return MessageType.IMAGE, None
+    if lowered in {marker.lower() for marker in _FILE_MARKERS}:
+        return MessageType.FILE, None
+
+    match = _MARKDOWN_ASSET_PATTERN.match(normalized)
+    if not match:
+        return None
+
+    label = match.group("label").strip().lower()
+    uri = match.group("uri").strip()
+    path = _file_uri_to_local_path(uri)
+    suffix = os.path.splitext(urlparse(uri).path)[1].lower()
+
+    if label in {"image", "图片", "图片消息"} or suffix in _IMAGE_SUFFIXES:
+        return MessageType.IMAGE, path
+    return MessageType.FILE, path
 
 
 def parse_wecom_text(text: str) -> list[Message]:
     """Parse copied WeCom text without summarizing or rewriting content.
 
     Timestamps remain as displayed strings because same-day copies may omit the year/date.
+    Rich clipboard media links such as ``[image](file:///D:/...)`` are preserved
+    as source_asset_path so the package builder can copy the original file directly.
     """
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     chunks: list[_Chunk] = []
@@ -79,7 +117,14 @@ def parse_wecom_text(text: str) -> list[Message]:
 
     messages: list[Message] = []
 
-    def add_message(sender: str, time: str, msg_type: MessageType, content: str, header: str) -> None:
+    def add_message(
+        sender: str,
+        time: str,
+        msg_type: MessageType,
+        content: str,
+        header: str,
+        source_asset_path: str | None = None,
+    ) -> None:
         messages.append(
             Message(
                 id=f"msg-{len(messages) + 1:03d}",
@@ -88,6 +133,7 @@ def parse_wecom_text(text: str) -> list[Message]:
                 type=msg_type,
                 content=content,
                 source_header=header,
+                source_asset_path=source_asset_path,
             )
         )
 
@@ -101,10 +147,18 @@ def parse_wecom_text(text: str) -> list[Message]:
                 add_message(chunk.sender, chunk.time, MessageType.TEXT, content, chunk.header)
 
         for line in chunk.lines:
-            marker = _marker_type(line)
+            marker = _asset_marker(line)
             if marker is not None:
                 flush_text()
-                add_message(chunk.sender, chunk.time, marker, line.strip(), chunk.header)
+                message_type, source_asset_path = marker
+                add_message(
+                    chunk.sender,
+                    chunk.time,
+                    message_type,
+                    line.strip(),
+                    chunk.header,
+                    source_asset_path=source_asset_path,
+                )
             else:
                 text_buffer.append(line)
         flush_text()
