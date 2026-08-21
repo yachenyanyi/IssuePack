@@ -30,6 +30,33 @@ def test_builds_package_and_binds_image(tmp_path: Path):
     assert "![msg-002 customer image](./images/msg-002-image.png)" in markdown
 
 
+def test_builds_package_from_recovered_source_asset_path(tmp_path: Path):
+    image = tmp_path / "wecom-cache.jpg"
+    image.write_bytes(b"fake-jpeg")
+    messages = [
+        Message(
+            "msg-001",
+            "客户A",
+            "8/17 13:21:57",
+            MessageType.IMAGE,
+            "[image](file:///D:/fake.jpg)",
+            source_asset_path=str(image),
+        )
+    ]
+
+    package = build_package(
+        tmp_path / "out",
+        "自动恢复图片",
+        messages,
+        {},
+        now=datetime(2026, 8, 21, 10, 30, 1),
+    )
+
+    assert (package / "images" / "msg-001-image.jpg").read_bytes() == b"fake-jpeg"
+    markdown = (package / "issue.md").read_text(encoding="utf-8")
+    assert "./images/msg-001-image.jpg" in markdown
+
+
 def test_missing_asset_remains_explicit(tmp_path: Path):
     messages = [Message("msg-001", "客户A", "10:22", MessageType.IMAGE, "图片")]
     package = build_package(
