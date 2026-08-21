@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -31,18 +32,20 @@ from .clipboard import ClipboardCaptureError, capture_clipboard_asset, read_clip
 from .models import Message, MessageType
 from .package_builder import build_package, source_asset_for
 from .parser import parse_wecom_text
+from .timeline import reindex_messages
 
 
 class IssuePackWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("IssuePack V0")
-        self.resize(980, 720)
+        self.resize(1320, 820)
 
         self.messages: list[Message] = []
         self.captured_assets: dict[str, Path] = {}
         self.session_dir = Path(tempfile.mkdtemp(prefix="issuepack-session-"))
         self.last_package: Path | None = None
+        self.timeline_dirty = False
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("例如：移动端首页产品区调整")
@@ -63,10 +66,36 @@ class IssuePackWindow(QMainWindow):
         parse_button = QPushButton("解析聊天")
         parse_button.clicked.connect(self.parse_chat)
 
-        self.placeholder_list = QListWidget()
-        self.placeholder_list.setMinimumWidth(330)
+        self.message_list = QListWidget()
+        self.message_list.setMinimumWidth(470)
+        self.message_list.currentRowChanged.connect(self.load_selected_message)
 
-        self.capture_button = QPushButton("捕获下一个未解析附件")
+        self.sender_edit = QLineEdit()
+        self.time_edit = QLineEdit()
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("文本", MessageType.TEXT.value)
+        self.type_combo.addItem("图片", MessageType.IMAGE.value)
+        self.type_combo.addItem("文件", MessageType.FILE.value)
+        self.content_edit = QPlainTextEdit()
+        self.content_edit.setPlaceholderText("当前消息内容；图片/文件消息可保留说明文字。")
+        self.content_edit.setMaximumHeight(110)
+
+        save_button = QPushButton("保存修改")
+        save_button.clicked.connect(self.save_selected_message)
+        insert_before_button = QPushButton("前插一条")
+        insert_before_button.clicked.connect(lambda: self.insert_message(before=True))
+        insert_after_button = QPushButton("后插一条")
+        insert_after_button.clicked.connect(lambda: self.insert_message(before=False))
+        move_up_button = QPushButton("上移")
+        move_up_button.clicked.connect(lambda: self.move_selected_message(-1))
+        move_down_button = QPushButton("下移")
+        move_down_button.clicked.connect(lambda: self.move_selected_message(1))
+        delete_button = QPushButton("删除")
+        delete_button.clicked.connect(self.delete_selected_message)
+        clear_editor_button = QPushButton("清空编辑区")
+        clear_editor_button.clicked.connect(self.clear_message_editor)
+
+        self.capture_button = QPushButton("捕获选中/下一个未解析附件")
         self.capture_button.clicked.connect(self.capture_next_asset)
         self.capture_button.setEnabled(False)
 
@@ -97,20 +126,47 @@ class IssuePackWindow(QMainWindow):
 
         body = QHBoxLayout()
         left = QVBoxLayout()
-        left.addWidget(QLabel("企业微信聊天原文"))
+        left.addWidget(QLabel("企业微信聊天原文（重新解析会覆盖右侧人工编辑）"))
         left.addWidget(self.chat_edit, 1)
         left_actions = QHBoxLayout()
         left_actions.addWidget(paste_button)
         left_actions.addWidget(parse_button)
         left.addLayout(left_actions)
-        body.addLayout(left, 2)
+        body.addLayout(left, 3)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("附件（优先自动恢复，失败时手动捕获）"))
-        right.addWidget(self.placeholder_list, 1)
+        right.addWidget(QLabel("消息时间线（这里的顺序和内容将用于最终 Issue Package）"))
+        right.addWidget(self.message_list, 2)
+
+        editor = QGroupBox("编辑选中消息")
+        editor_layout = QGridLayout(editor)
+        editor_layout.addWidget(QLabel("发送人"), 0, 0)
+        editor_layout.addWidget(self.sender_edit, 0, 1)
+        editor_layout.addWidget(QLabel("时间"), 1, 0)
+        editor_layout.addWidget(self.time_edit, 1, 1)
+        editor_layout.addWidget(QLabel("类型"), 2, 0)
+        editor_layout.addWidget(self.type_combo, 2, 1)
+        editor_layout.addWidget(QLabel("内容"), 3, 0, Qt.AlignmentFlag.AlignTop)
+        editor_layout.addWidget(self.content_edit, 3, 1)
+        right.addWidget(editor)
+
+        edit_actions_1 = QHBoxLayout()
+        edit_actions_1.addWidget(save_button)
+        edit_actions_1.addWidget(insert_before_button)
+        edit_actions_1.addWidget(insert_after_button)
+        right.addLayout(edit_actions_1)
+
+        edit_actions_2 = QHBoxLayout()
+        edit_actions_2.addWidget(move_up_button)
+        edit_actions_2.addWidget(move_down_button)
+        edit_actions_2.addWidget(delete_button)
+        edit_actions_2.addWidget(clear_editor_button)
+        right.addLayout(edit_actions_2)
+
+        right.addWidget(QLabel("附件（优先自动恢复；选中未解析图片/文件后可手动捕获）"))
         right.addWidget(self.capture_button)
         right.addWidget(self.progress)
-        body.addLayout(right, 1)
+        body.addLayout(right, 2)
         layout.addLayout(body, 1)
 
         actions = QHBoxLayout()
@@ -136,6 +192,9 @@ class IssuePackWindow(QMainWindow):
             f"已读取剪贴板文本（{'检测到富文本，可恢复图片路径' if rich else '仅检测到纯文本'}），点击“解析聊天”。"
         )
 
+    def _placeholders(self) -> list[Message]:
+        return [message for message in self.messages if message.type in {MessageType.IMAGE, MessageType.FILE}]
+
     def _stage_recovered_assets(self) -> int:
         staged = 0
         for message in self._placeholders():
@@ -152,11 +211,22 @@ class IssuePackWindow(QMainWindow):
         return staged
 
     def parse_chat(self) -> None:
+        if self.timeline_dirty and self.messages:
+            answer = QMessageBox.question(
+                self,
+                "覆盖人工编辑？",
+                "重新解析左侧聊天原文会覆盖右侧已经手动插入、删除、排序或修改的记录。继续吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
         text = self.chat_edit.toPlainText()
         self.messages = parse_wecom_text(text)
         self.captured_assets.clear()
         auto_count = self._stage_recovered_assets()
-        self.refresh_placeholders()
+        self.timeline_dirty = False
+        self.refresh_timeline(0 if self.messages else None)
         text_count = sum(message.type == MessageType.TEXT for message in self.messages)
         asset_count = sum(message.type != MessageType.TEXT for message in self.messages)
         if not self.messages:
@@ -166,37 +236,189 @@ class IssuePackWindow(QMainWindow):
                 f"解析到 {len(self.messages)} 条事件：文本 {text_count}，附件 {asset_count}；已自动恢复 {auto_count} 个本地附件。"
             )
 
-    def _placeholders(self) -> list[Message]:
-        return [message for message in self.messages if message.type in {MessageType.IMAGE, MessageType.FILE}]
+    def _message_summary(self, message: Message) -> str:
+        if message.type == MessageType.TEXT:
+            preview = " ".join(message.content.split())
+            if len(preview) > 54:
+                preview = preview[:51] + "..."
+            return f"文本 · {preview or '（空）'}"
 
-    def refresh_placeholders(self) -> None:
-        self.placeholder_list.clear()
-        placeholders = self._placeholders()
-        for message in placeholders:
-            captured = message.id in self.captured_assets
-            icon = "✓" if captured else "○"
-            kind = "图片" if message.type == MessageType.IMAGE else "文件"
-            mode = "自动恢复" if captured and message.source_asset_path else ("手动捕获" if captured else "待补充")
-            item = QListWidgetItem(f"{icon} {message.id} · {message.time} · {message.sender} · {kind} · {mode}")
+        captured = message.id in self.captured_assets
+        kind = "图片" if message.type == MessageType.IMAGE else "文件"
+        if captured and message.source_asset_path:
+            mode = "自动恢复"
+        elif captured:
+            mode = "手动捕获"
+        else:
+            mode = "待补充"
+        return f"{kind} · {mode}"
+
+    def refresh_timeline(self, selected_index: int | None = None) -> None:
+        if selected_index is None:
+            selected_index = self.message_list.currentRow()
+
+        self.message_list.clear()
+        for message in self.messages:
+            item = QListWidgetItem(
+                f"{message.id} · {message.time or '无时间'} · {message.sender or 'Unknown'} · {self._message_summary(message)}"
+            )
             item.setData(Qt.ItemDataRole.UserRole, message.id)
-            self.placeholder_list.addItem(item)
+            self.message_list.addItem(item)
+
+        if self.messages:
+            row = selected_index if selected_index is not None and selected_index >= 0 else 0
+            row = min(row, len(self.messages) - 1)
+            self.message_list.setCurrentRow(row)
+        else:
+            self.clear_message_editor()
+
+        self.refresh_asset_progress()
+
+    def refresh_asset_progress(self) -> None:
+        placeholders = self._placeholders()
         done = len([message for message in placeholders if message.id in self.captured_assets])
         total = len(placeholders)
         self.progress.setRange(0, max(total, 1))
         self.progress.setValue(done)
         self.capture_button.setEnabled(done < total)
 
+    def load_selected_message(self, row: int) -> None:
+        if row < 0 or row >= len(self.messages):
+            return
+        message = self.messages[row]
+        self.sender_edit.setText(message.sender)
+        self.time_edit.setText(message.time)
+        combo_index = self.type_combo.findData(message.type.value)
+        if combo_index >= 0:
+            self.type_combo.setCurrentIndex(combo_index)
+        self.content_edit.setPlainText(message.content)
+
+    def clear_message_editor(self) -> None:
+        self.sender_edit.clear()
+        self.time_edit.clear()
+        self.type_combo.setCurrentIndex(0)
+        self.content_edit.clear()
+
+    def _selected_index(self) -> int | None:
+        row = self.message_list.currentRow()
+        if 0 <= row < len(self.messages):
+            return row
+        return None
+
+    def _reindex_timeline(self) -> None:
+        self.captured_assets = reindex_messages(self.messages, self.captured_assets)
+
+    def save_selected_message(self) -> None:
+        index = self._selected_index()
+        if index is None:
+            QMessageBox.information(self, "IssuePack", "请先在时间线中选择一条消息。")
+            return
+
+        message = self.messages[index]
+        new_type = MessageType(self.type_combo.currentData())
+        if new_type != message.type:
+            self.captured_assets.pop(message.id, None)
+            message.source_asset_path = None
+            message.asset_path = None
+
+        message.sender = self.sender_edit.text().strip() or "Unknown"
+        message.time = self.time_edit.text().strip()
+        message.type = new_type
+        message.content = self.content_edit.toPlainText()
+        self.timeline_dirty = True
+        self.refresh_timeline(index)
+        self.status_label.setText(f"已修改 {message.id}。最终生成将使用右侧时间线内容。")
+
+    def insert_message(self, before: bool) -> None:
+        selected = self._selected_index()
+        if selected is None:
+            insert_at = 0 if before else len(self.messages)
+            sender = self.sender_edit.text().strip() or "Unknown"
+            time = self.time_edit.text().strip()
+        else:
+            insert_at = selected if before else selected + 1
+            anchor = self.messages[selected]
+            sender = anchor.sender
+            time = anchor.time
+
+        self.messages.insert(
+            insert_at,
+            Message(
+                id="msg-new",
+                sender=sender,
+                time=time,
+                type=MessageType.TEXT,
+                content="",
+            ),
+        )
+        self._reindex_timeline()
+        self.timeline_dirty = True
+        self.refresh_timeline(insert_at)
+        self.content_edit.setFocus()
+        self.status_label.setText("已插入一条空白文本记录。填写右侧编辑区后点击“保存修改”。")
+
+    def move_selected_message(self, delta: int) -> None:
+        index = self._selected_index()
+        if index is None:
+            return
+        target = index + delta
+        if target < 0 or target >= len(self.messages):
+            return
+
+        message = self.messages.pop(index)
+        self.messages.insert(target, message)
+        self._reindex_timeline()
+        self.timeline_dirty = True
+        self.refresh_timeline(target)
+        self.status_label.setText(f"已调整消息顺序：当前为 {self.messages[target].id}。")
+
+    def delete_selected_message(self) -> None:
+        index = self._selected_index()
+        if index is None:
+            return
+        message = self.messages[index]
+        answer = QMessageBox.question(
+            self,
+            "删除消息？",
+            f"确定删除 {message.id} · {message.sender} · {message.time} 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.captured_assets.pop(message.id, None)
+        self.messages.pop(index)
+        self._reindex_timeline()
+        self.timeline_dirty = True
+        next_index = min(index, len(self.messages) - 1) if self.messages else None
+        self.refresh_timeline(next_index)
+        self.status_label.setText("已删除消息并重新编号，其他附件绑定已自动保持。")
+
     def capture_next_asset(self) -> None:
-        target = next((m for m in self._placeholders() if m.id not in self.captured_assets), None)
+        target: Message | None = None
+        selected = self._selected_index()
+        if selected is not None:
+            selected_message = self.messages[selected]
+            if (
+                selected_message.type in {MessageType.IMAGE, MessageType.FILE}
+                and selected_message.id not in self.captured_assets
+            ):
+                target = selected_message
+
+        if target is None:
+            target = next((m for m in self._placeholders() if m.id not in self.captured_assets), None)
         if target is None:
             return
+
         try:
             captured = capture_clipboard_asset(self.session_dir, target.id, target.type)
         except ClipboardCaptureError as exc:
             QMessageBox.warning(self, "捕获失败", str(exc))
             return
         self.captured_assets[target.id] = captured
-        self.refresh_placeholders()
+        self.timeline_dirty = True
+        selected_index = self.messages.index(target)
+        self.refresh_timeline(selected_index)
         self.status_label.setText(f"已手动捕获 {target.id}: {captured.name}")
 
     def generate_package(self) -> None:
