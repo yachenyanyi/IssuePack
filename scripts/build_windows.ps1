@@ -14,6 +14,6 @@ if (-not (Test-Path ".venv")) {
     --windowed `
     --name IssuePack `
     --collect-all PySide6 `
-    src\issuepack\app.py
+    run_issuepack.py
 
 Write-Host "Built: dist\IssuePack\IssuePack.exe"
