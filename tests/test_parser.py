@@ -48,6 +48,21 @@ def test_parses_real_wecom_style_header_and_image_file_uri():
     assert messages[1].content == "已经修复完成"
 
 
+def test_splits_text_and_inline_image_into_separate_timeline_events():
+    text = """春天@微信@微信联系人 8/17 14:21:00
+咱们第一次合作做小程序开发，确实有很多功能和细节需要多次沟通，反复修改，辛苦啦[image](file:///C:/Users/User/AppData/Local/Temp/reaction.png)
+"""
+    messages = parse_wecom_text(text)
+    assert len(messages) == 2
+    assert messages[0].type == MessageType.TEXT
+    assert messages[0].content.endswith("辛苦啦")
+    assert messages[1].type == MessageType.IMAGE
+    assert messages[1].source_asset_path is not None
+    assert messages[1].source_asset_path.lower().endswith("reaction.png")
+    assert messages[0].sender == messages[1].sender
+    assert messages[0].time == messages[1].time
+
+
 def test_header_accepts_non_breaking_spaces_from_wecom_copy():
     text = "客户A@微信@微信联系人\u00a08/16\u00a021:35:55\n域名以前都有提供啊"
     messages = parse_wecom_text(text)
