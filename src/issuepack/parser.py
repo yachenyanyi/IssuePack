@@ -15,6 +15,10 @@ _MARKDOWN_ASSET_PATTERN = re.compile(
     r"^!?\[(?P<label>[^\]]+)\]\((?P<uri>file:///.+)\)$",
     re.IGNORECASE,
 )
+_INLINE_ASSET_PATTERN = re.compile(
+    r"!?\[[^\]]+\]\(file:///[^)]+\)",
+    re.IGNORECASE,
+)
 
 # WeCom copy formats can differ slightly by client/version. Keep the parser permissive.
 _HEADER_PATTERNS = [
@@ -92,6 +96,8 @@ def parse_wecom_text(text: str) -> list[Message]:
     Timestamps remain as displayed strings because same-day copies may omit the year/date.
     Rich clipboard media links such as ``[image](file:///D:/...)`` are preserved
     as source_asset_path so the package builder can copy the original file directly.
+    Inline media links appended to ordinary text are split into separate timeline events while
+    preserving their original order.
     """
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     chunks: list[_Chunk] = []
@@ -147,6 +153,32 @@ def parse_wecom_text(text: str) -> list[Message]:
                 add_message(chunk.sender, chunk.time, MessageType.TEXT, content, chunk.header)
 
         for line in chunk.lines:
+            inline_assets = list(_INLINE_ASSET_PATTERN.finditer(line))
+            if inline_assets:
+                cursor = 0
+                for match in inline_assets:
+                    before = line[cursor : match.start()]
+                    if before:
+                        text_buffer.append(before)
+                    flush_text()
+                    marker_text = match.group(0)
+                    marker = _asset_marker(marker_text)
+                    if marker is not None:
+                        message_type, source_asset_path = marker
+                        add_message(
+                            chunk.sender,
+                            chunk.time,
+                            message_type,
+                            marker_text,
+                            chunk.header,
+                            source_asset_path=source_asset_path,
+                        )
+                    cursor = match.end()
+                after = line[cursor:]
+                if after:
+                    text_buffer.append(after)
+                continue
+
             marker = _asset_marker(line)
             if marker is not None:
                 flush_text()
